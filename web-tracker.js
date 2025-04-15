@@ -1,80 +1,100 @@
 /**
  * UniversalTracking Library
  *
- *  Description:
- * A lightweight, browser-friendly event tracking library using `data-*` attributes and manual APIs.
- * Ideal for integrating custom analytics or behavior logging into web apps.
+ * Description:
+ * A comprehensive, lightweight tracking library designed for web applications,
+ * allowing easy integration of user event analytics and behavior tracking.
  *
- *  Core Capabilities:
- * - Manual tracking via `UniversalTracking.trackEvent(eventName, trackingData)`
- * - Auto DOM-based tracking via `data-track-event`, `data-track-on`, and `data-track-props`
- * - Periodic batch sending using `XMLHttpRequest`
- * - Offline/failed request recovery using `localStorage`
- * - Client metadata enrichment (OS, device, location, timezone, etc.)
- * - Cookie-based authentication (`apiKey`, `sessionId`)
- * - Built-in idle/active user tracking
+ * Features:
+ * - Manual event logging via `trackEvent()`.
+ * - Automatic DOM-based event tracking using HTML attributes (`data-track-event`).
+ * - Periodic batch transmission of tracking data using XMLHttpRequest.
+ * - Offline support and retry mechanism leveraging `localStorage`.
+ * - Enhanced client metadata collection (User-Agent, OS, device type, timezone, geolocation).
+ * - Cookie-based authentication (`apiKey`, `sessionId`, optionally `userId`).
+ * - Configurable idle/active user state tracking.
  *
- *  How to Use:
- * 1. Initialize tracker with a callback:
- *    `UniversalTracking.init((data) => { ... })`
+ * Usage:
+ * 1. Initialize the tracking system:
+ *    ```js
+ *    UniversalTracking.init({
+ *      API_KEY: 'your-api-key',
+ *      SESSION_ID: 'your-session-id',
+ *      USER_ID: 'optional-user-id',
+ *      periodicSend: 30,        // optional, defaults to 60s
+ *      customIdleTimer: 10,     // optional, defaults to 50s
+ *      retryCount: 3            // optional, number of retries for failed requests
+ *    }, (data) => {
+ *      console.log('Event tracked:', data);
+ *    });
  *
- * 2. Set auth details via cookies:
- *    `UniversalTracking.setAuthDetails('API_KEY', 'SESSION_ID')`
+ * 2. Automatic tracking for DOM elements:
+ *    Add attributes to elements you wish to track automatically:
+ *    ```html
+ *    <button
+ *      data-track-event="button_clicked"
+ *      data-track-on="click"
+ *      data-track-props='{"source":"header"}'>
+ *      Click me
+ *    </button>
+ *    ```
  *
- * 3. Start periodic flushing of the event queue:
- *    `UniversalTracking.startPeriodicSend(30)` // every 30s
+ * 3. Manual event tracking:
+ *    ```js
+ *    UniversalTracking.trackEvent('custom_event', { customKey: 'customValue' });
+ *    ```
  *
- * 4. Enable idle tracking (optional):
- *    `UniversalTracking.setCustomIdleTimer(10)` // idle after 10s
+ * 4. Resetting stored tracking data and authentication:
+ *    ```js
+ *    UniversalTracking.resetStorage();
+ *    ```
  *
- * 5. Attach tracking to DOM:
- *    `UniversalTracking.attach()` // auto-binds all `[data-track-event]`
+ * Implementation Notes:
+ * - Events are queued and periodically sent to a server endpoint.
+ * - Ensures only one concurrent request is active at a time.
+ * - Stores failed events in `localStorage` and attempts automatic retries.
+ * - Captures enriched metadata asynchronously to accompany tracked events.
+ * - Idle tracking monitors user interactions to determine active/idle states.
+ * - Provides functionality to manage and clear authentication cookies and stored events.
  *
- * 6. Track events manually:
- *    `UniversalTracking.trackEvent('eventName', { key: 'value' })`
- *
- *  Example Markup for DOM Auto-Tracking:
- * <button
- *   data-track-event="button_click"
- *   data-track-on="click"
- *   data-track-props='{"source": "header"}'>
- *   Click Me
- * </button>
- *
- *  Export Modes:
- * - Browser: Exposed as `window.UniversalTracking`
- * - Node/CommonJS: Exported via `module.exports`
- *
- *  Example Setup:
- * ```js
- * export const initTracking = () => {
- *   const tracking = window.UniversalTracking;
- *   if (!tracking) return;
- *
- *   tracking.setAuthDetails('your-api-key', 'your-session-id');
- *   tracking.init((data) => {
- *     console.log('Tracked from React:', data);
- *     return data;
- *   });
- *   tracking.startPeriodicSend(30);
- *   tracking.setCustomIdleTimer(10);
- *   tracking.attach();
- * };
- *
- * initTracking();
+ * Export Compatibility:
+ * - Browser Global: accessible as `window.UniversalTracking`
+ * - Node.js/CommonJS: accessible via `module.exports`
  */
 
 (function setupUniversalTracking(global) {
   const UniversalTracking = (function createUniversalTrackingLib() {
     let trackerFn = null;
+    let isSending = false;
+    const LOCAL_STORAGE_KEY = "UNSENT_TRACKING_EVENTS";
+    let idleTimeout = null;
+    let isUserIdle = false;
+    let idleThreshold = 30000;
+    let isIdleTrackingEnabled = true;
+    const xhr = new XMLHttpRequest();
+    const idleEvents = {
+      IDLE_START: "idl-start",
+      IDLE_END: "idl-end",
+    };
+    const activityEvents = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "touchstart",
+      "scroll",
+    ];
     window.analyticsQueue = []; // Data Layer for storing events
-    function setAuthDetails(apiKey, sessionId) {
+
+    function setAuthDetails(apiKey, sessionId, userId = null) {
       if (typeof apiKey === "string" && typeof sessionId === "string") {
         document.cookie = `APP_TRACKING_API_KEY=${encodeURIComponent(
           apiKey
         )}; path=/;`;
         document.cookie = `APP_TRACKING_SESSION_ID=${encodeURIComponent(
           sessionId
+        )}; path=/;`;
+        document.cookie = `APP_TRACKING_USER_ID=${encodeURIComponent(
+          userId
         )}; path=/;`;
       } else {
         console.error(
@@ -86,19 +106,70 @@
       const match = document.cookie.match(new RegExp(`(^| )${name}=([^;]+)`));
       return match ? decodeURIComponent(match[2]) : null;
     }
+    function removeCookie(cookieName, path = "/", domain = "") {
+      if (!cookieName) {
+        console.warn(
+          "UniversalTracking: removeCookie requires a valid cookie name."
+        );
+        return;
+      }
+      document.cookie = `${cookieName}=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=${path};${
+        domain ? ` domain=${domain};` : ""
+      }`;
+    }
     function isAuthorized() {
       const apiKey = getCookieValue("APP_TRACKING_API_KEY");
       const sessionId = getCookieValue("APP_TRACKING_SESSION_ID");
       return !!(apiKey && sessionId);
     }
 
-    function init(callback) {
-      if (typeof callback !== "function") {
-        console.warn("UniversalTracking: init() requires a function.");
+    async function init(configObj, callback) {
+      if (
+        typeof configObj !== "object" ||
+        Object.keys(configObj).length === 0
+      ) {
+        console.warn(
+          "UniversalTracking: init() requires a valid configuration."
+        );
         return;
       }
       trackerFn = callback;
-      startPeriodicSend();
+      configureTracking(configObj);
+      if (!isAuthorized()) {
+        console.warn("UniversalTracking: User not registered for analytics.");
+        return;
+      }
+      let clientDetails = {};
+      try {
+        clientDetails = await getClientDetails();
+      } catch (err) {
+        console.warn("UniversalTracking: Failed to get client details.", err);
+      }
+      const { agent, os, device, timeZone, location } = clientDetails;
+      xhr.open("POST", "https://example.com/track", true);
+      xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+      xhr.setRequestHeader(
+        "Authorization",
+        `ApiKey ${getCookieValue("APP_TRACKING_API_KEY")}`
+      );
+      xhr.setRequestHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      xhr.setRequestHeader(
+        "X-User-Id",
+        getCookieValue("APP_TRACKING_USER_ID") || "Unknown"
+      );
+      xhr.setRequestHeader("User-Agent", agent || "Unknown");
+      xhr.setRequestHeader("Sec-CH-UA-Platform", os || "Unknown");
+      xhr.setRequestHeader("X-Device", device || "Unknown");
+      xhr.setRequestHeader("X-Timezone", timeZone || "Unknown");
+      xhr.setRequestHeader(
+        "Location",
+        location ? JSON.stringify(location) : "Unknown"
+      );
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => attach());
+      } else {
+        attach();
+      }
     }
 
     async function trackEvent(eventName, trackingData = {}) {
@@ -142,24 +213,29 @@
       }
     }
 
-    let isSending = false;
-
+    function configureTracking(configObj) {
+      if (configObj.API_KEY && configObj.SESSION_ID) {
+        setAuthDetails(
+          configObj.API_KEY,
+          configObj.SESSION_ID,
+          configObj.USER_ID ?? null
+        );
+      }
+      if (configObj.periodicSend) {
+        startPeriodicSend(configObj.periodicSend);
+      }
+      if (configObj.customIdleTimer) {
+        setCustomIdleTimer(configObj.customIdleTimer);
+      }
+      if (configObj.retryCount) {
+        retryUnsentEvents(configObj.retryCount);
+      }
+    }
     async function sendData(data) {
       if (!data || !data.length || isSending) return; // Prevent concurrent calls
       isSending = true;
 
       try {
-        const clientDetails = await getClientDetails();
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "https://example.com/track", true);
-        xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-        xhr.setRequestHeader(
-          "Authorization",
-          `ApiKey ${getCookieValue("APP_TRACKING_API_KEY")}`
-        );
-        xhr.setRequestHeader("X-User-Id", "null");
-        xhr.setRequestHeader("X-Metadata", stringifyProps(clientDetails));
-
         xhr.onreadystatechange = () => {
           if (xhr.readyState === 4) {
             isSending = false; // Reset lock
@@ -174,7 +250,6 @@
             }
           }
         };
-
         xhr.onerror = () => {
           isSending = false; // Reset lock on error
           saveUnsentEvents(data);
@@ -238,6 +313,7 @@
     }
 
     async function getClientDetails() {
+      // To Get Metadata of the Client
       const ua = navigator.userAgent;
       const { timeZone } = Intl.DateTimeFormat().resolvedOptions();
 
@@ -291,8 +367,6 @@
         ...uaDetails,
       };
     }
-
-    const LOCAL_STORAGE_KEY = "UNSENT_TRACKING_EVENTS";
 
     function saveUnsentEvents(events) {
       try {
@@ -372,23 +446,6 @@
     }
     // *********************************Timer*************************************
 
-    let idleTimeout = null;
-    let isUserIdle = false;
-    let idleThreshold = 30000;
-    let isIdleTrackingEnabled = true;
-    const idleEvents = {
-      IDLE_START: "idl-start",
-      IDLE_END: "idl-end",
-    };
-
-    const activityEvents = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "touchstart",
-      "scroll",
-    ];
-
     function setCustomIdleTimer(threshold = 50) {
       idleThreshold = threshold * 1000;
       if (isIdleTrackingEnabled) {
@@ -434,18 +491,21 @@
         });
       }, idleThreshold);
     }
-
+    function resetStorage() {
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      [
+        "APP_TRACKING_API_KEY",
+        "APP_TRACKING_SESSION_ID",
+        "APP_TRACKING_USER_ID",
+      ].forEach((cookieName) => removeCookie(cookieName));
+    }
     return {
       init,
-      attach,
       trackEvent,
-      setAuthDetails,
-      startPeriodicSend,
-      setCustomIdleTimer,
       toggleIdleTracking,
-      retryUnsentEvents,
       getPreviousPath,
       getCurrentPath,
+      resetStorage,
     };
   })();
 

@@ -1,65 +1,63 @@
 /**
  * UniversalTracking Library
  *
- *  Description:
- * A lightweight, browser-friendly event tracking library using `data-*` attributes and manual APIs.
- * Ideal for integrating custom analytics or behavior logging into web apps.
+ * Description:
+ * A comprehensive, lightweight tracking library designed for web applications,
+ * allowing easy integration of user event analytics and behavior tracking.
  *
- *  Core Capabilities:
- * - Manual tracking via `UniversalTracking.trackEvent(eventName, trackingData)`
- * - Auto DOM-based tracking via `data-track-event`, `data-track-on`, and `data-track-props`
- * - Periodic batch sending using `XMLHttpRequest`
- * - Offline/failed request recovery using `localStorage`
- * - Client metadata enrichment (OS, device, location, timezone, etc.)
- * - Cookie-based authentication (`apiKey`, `sessionId`)
- * - Built-in idle/active user tracking
+ * Features:
+ * - Manual event logging via `trackEvent()`.
+ * - Automatic DOM-based event tracking using HTML attributes (`data-track-event`).
+ * - Periodic batch transmission of tracking data using XMLHttpRequest.
+ * - Offline support and retry mechanism leveraging `localStorage`.
+ * - Enhanced client metadata collection (User-Agent, OS, device type, timezone, geolocation).
+ * - Cookie-based authentication (`apiKey`, `sessionId`, optionally `userId`).
+ * - Configurable idle/active user state tracking.
  *
- *  How to Use:
- * 1. Initialize tracker with a callback:
- *    `UniversalTracking.init((data) => { ... })`
+ * Usage:
+ * 1. Initialize the tracking system:
+ *    ```js
+ *    UniversalTracking.init({
+ *      API_KEY: 'your-api-key',
+ *      SESSION_ID: 'your-session-id',
+ *      USER_ID: 'optional-user-id',
+ *      periodicSend: 30,        // optional, defaults to 60s
+ *      customIdleTimer: 10,     // optional, defaults to 50s
+ *      retryCount: 3            // optional, number of retries for failed requests
+ *    }, (data) => {
+ *      console.log('Event tracked:', data);
+ *    });
  *
- * 2. Set auth details via cookies:
- *    `UniversalTracking.setAuthDetails('API_KEY', 'SESSION_ID')`
+ * 2. Automatic tracking for DOM elements:
+ *    Add attributes to elements you wish to track automatically:
+ *    ```html
+ *    <button
+ *      data-track-event="button_clicked"
+ *      data-track-on="click"
+ *      data-track-props='{"source":"header"}'>
+ *      Click me
+ *    </button>
+ *    ```
  *
- * 3. Start periodic flushing of the event queue:
- *    `UniversalTracking.startPeriodicSend(30)` // every 30s
+ * 3. Manual event tracking:
+ *    ```js
+ *    UniversalTracking.trackEvent('custom_event', { customKey: 'customValue' });
+ *    ```
  *
- * 4. Enable idle tracking (optional):
- *    `UniversalTracking.setCustomIdleTimer(10)` // idle after 10s
+ * 4. Resetting stored tracking data and authentication:
+ *    ```js
+ *    UniversalTracking.resetStorage();
+ *    ```
  *
- * 5. Attach tracking to DOM:
- *    `UniversalTracking.attach()` // auto-binds all `[data-track-event]`
+ * Implementation Notes:
+ * - Events are queued and periodically sent to a server endpoint.
+ * - Ensures only one concurrent request is active at a time.
+ * - Stores failed events in `localStorage` and attempts automatic retries.
+ * - Captures enriched metadata asynchronously to accompany tracked events.
+ * - Idle tracking monitors user interactions to determine active/idle states.
+ * - Provides functionality to manage and clear authentication cookies and stored events.
  *
- * 6. Track events manually:
- *    `UniversalTracking.trackEvent('eventName', { key: 'value' })`
- *
- *  Example Markup for DOM Auto-Tracking:
- * <button
- *   data-track-event="button_click"
- *   data-track-on="click"
- *   data-track-props='{"source": "header"}'>
- *   Click Me
- * </button>
- *
- *  Export Modes:
- * - Browser: Exposed as `window.UniversalTracking`
- * - Node/CommonJS: Exported via `module.exports`
- *
- *  Example Setup:
- * ```js
- * export const initTracking = () => {
- *   const tracking = window.UniversalTracking;
- *   if (!tracking) return;
- *
- *   tracking.setAuthDetails('your-api-key', 'your-session-id');
- *   tracking.init((data) => {
- *     console.log('Tracked from React:', data);
- *     return data;
- *   });
- *   tracking.startPeriodicSend(30);
- *   tracking.setCustomIdleTimer(10);
- *   tracking.attach();
- * };
- *
- * initTracking();
+ * Export Compatibility:
+ * - Browser Global: accessible as `window.UniversalTracking`
+ * - Node.js/CommonJS: accessible via `module.exports`
  */
